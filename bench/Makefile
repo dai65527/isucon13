@@ -26,10 +26,10 @@ test: clean
 	$(TEST) $(TEST_FLAGS) ./...
 
 bench: build
-	./bin/bench_$(shell go env GOOS)_$(shell go env GOARCH) run --dns-port=1053
+	./bin/bench_$(shell go env GOOS)_$(shell go env GOARCH) run --dns-port=1053 --target="http://pipe.u.isucon.dev:8443"
 
 pretest: build
-	./bin/bench_$(shell go env GOOS)_$(shell go env GOARCH) run --dns-port=1053 --pretest-only
+	./bin/bench_$(shell go env GOOS)_$(shell go env GOARCH) run --dns-port=1053 --target="http://pipe.u.isucon.dev:8443" --pretest-only
 
 deploy_develop:
 	sudo aws ecr get-login-password --region ap-northeast-1 | sudo docker login --username AWS --password-stdin 424484851194.dkr.ecr.ap-northeast-1.amazonaws.com
