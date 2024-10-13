@@ -18,6 +18,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 
 	"github.com/gorilla/sessions"
+	"github.com/labstack/echo-contrib/pprof"
 	"github.com/labstack/echo-contrib/session"
 	echolog "github.com/labstack/gommon/log"
 )
@@ -127,6 +128,9 @@ func main() {
 	cookieStore.Options.Domain = "*.u.isucon.dev"
 	e.Use(session.Middleware(cookieStore))
 	// e.Use(middleware.Recover())
+
+	// pprof
+	pprof.Register(e)
 
 	// 初期化
 	e.POST("/api/initialize", initializeHandler)
