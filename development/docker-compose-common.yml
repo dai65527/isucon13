@@ -2,6 +2,8 @@ version: '3.0'
 
 services:
   nginx:
+    cpus: '1'
+    mem_limit: 1G
     image: nginx:latest
     container_name: nginx
     volumes:
@@ -11,6 +13,8 @@ services:
     depends_on:
       - webapp
   mysql:
+    cpus: '1'
+    mem_limit: 1G
     image: mysql/mysql-server:8.0.31
     container_name: mysql
     environment:
