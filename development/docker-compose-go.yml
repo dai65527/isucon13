@@ -21,7 +21,7 @@ services:
       ISUCON13_POWERDNS_SUBDOMAIN_ADDRESS: 127.0.0.1
       ISUCON13_POWERDNS_DISABLED: true
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8888:8080"
     depends_on:
       mysql:
         condition: service_healthy
