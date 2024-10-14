@@ -286,23 +286,79 @@ func getLivestreamStatisticsHandler(c echo.Context) error {
 
 	// ランク算出
 	var ranking LivestreamRanking
+
+	// livestreamsのIDリストを抽出
+	livestreamIDs := make([]int64, 0, len(livestreams))
 	for _, livestream := range livestreams {
-		var reactions int64
-		if err := tx.GetContext(ctx, &reactions, "SELECT COUNT(*) FROM reactions WHERE livestream_id = ?", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count reactions: "+err.Error())
-		}
+		livestreamIDs = append(livestreamIDs, livestream.ID)
+	}
 
-		var totalTips int64
-		if err := tx.GetContext(ctx, &totalTips, "SELECT IFNULL(SUM(tip), 0) FROM livecomments WHERE livestream_id = ?", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count tips: "+err.Error())
-		}
+	// reactionsを一度に取得
+	reactionsMap := make(map[int64]int64)
+	queryReactions := `
+    SELECT livestream_id, COUNT(*) as reactions_count
+    FROM reactions
+    WHERE livestream_id IN (?)
+    GROUP BY livestream_id
+`
+	query, args, err := sqlx.In(queryReactions, livestreamIDs)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to build reactions query: "+err.Error())
+	}
+	query = tx.Rebind(query)
+	rows, err := tx.QueryxContext(ctx, query, args...)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch reactions: "+err.Error())
+	}
+	defer rows.Close()
 
+	for rows.Next() {
+		var livestreamID, reactions int64
+		if err := rows.Scan(&livestreamID, &reactions); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to scan reactions: "+err.Error())
+		}
+		reactionsMap[livestreamID] = reactions
+	}
+
+	// tipsを一度に取得
+	tipsMap := make(map[int64]int64)
+	queryTips := `
+    SELECT livestream_id, IFNULL(SUM(tip), 0) as total_tips
+    FROM livecomments
+    WHERE livestream_id IN (?)
+    GROUP BY livestream_id
+`
+	query, args, err = sqlx.In(queryTips, livestreamIDs)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to build tips query: "+err.Error())
+	}
+	query = tx.Rebind(query)
+	rows, err = tx.QueryxContext(ctx, query, args...)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch tips: "+err.Error())
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var livestreamID, totalTips int64
+		if err := rows.Scan(&livestreamID, &totalTips); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to scan tips: "+err.Error())
+		}
+		tipsMap[livestreamID] = totalTips
+	}
+
+	// reactionsとtipsを用いてスコア計算
+	for _, livestream := range livestreams {
+		reactions := reactionsMap[livestream.ID]
+		totalTips := tipsMap[livestream.ID]
 		score := reactions + totalTips
+
 		ranking = append(ranking, LivestreamRankingEntry{
 			LivestreamID: livestream.ID,
 			Score:        score,
 		})
 	}
+
 	sort.Sort(ranking)
 
 	var rank int64 = 1
