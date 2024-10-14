@@ -36,7 +36,7 @@ CREATE TABLE records (
 -- CREATE INDEX nametype_index ON records(name,type);
 CREATE INDEX domain_id ON records(domain_id);
 CREATE INDEX ordername ON records (ordername);
-
+alter table records add index idx_records_name_domainid_disabled_type (name, domain_id, disabled, type);
 
 CREATE TABLE supermasters (
   ip                    VARCHAR(64) NOT NULL,
