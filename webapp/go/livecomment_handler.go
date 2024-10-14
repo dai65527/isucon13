@@ -102,14 +102,9 @@ func getLivecommentsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livecomments: "+err.Error())
 	}
 
-	livecomments := make([]Livecomment, len(livecommentModels))
-	for i := range livecommentModels {
-		livecomment, err := fillLivecommentResponse(ctx, tx, livecommentModels[i])
-		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fil livecomments: "+err.Error())
-		}
-
-		livecomments[i] = livecomment
+	livecomments, err := fillLivecommentResponses(ctx, tx, livecommentModels)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livecomments: "+err.Error())
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -420,6 +415,96 @@ func moderateHandler(c echo.Context) error {
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"word_id": wordID,
 	})
+}
+
+func fillLivecommentResponses(ctx context.Context, tx *sqlx.Tx, livecommentModels []LivecommentModel) ([]Livecomment, error) {
+	if len(livecommentModels) == 0 {
+		return []Livecomment{}, nil
+	}
+
+	// Livecomment から UserID と LivestreamID をそれぞれ抽出
+	userIDs := make([]int64, len(livecommentModels))
+	livestreamIDs := make([]int64, len(livecommentModels))
+	for i, livecommentModel := range livecommentModels {
+		userIDs[i] = livecommentModel.UserID
+		livestreamIDs[i] = livecommentModel.LivestreamID
+	}
+
+	// Users を一括取得して fillUserResponses で処理
+	var userModels []UserModel
+	if len(userIDs) > 0 {
+		query, args, err := sqlx.In("SELECT * FROM users WHERE id IN (?)", userIDs)
+		if err != nil {
+			return nil, err
+		}
+		query = tx.Rebind(query)
+		if err := tx.SelectContext(ctx, &userModels, query, args...); err != nil {
+			return nil, err
+		}
+	}
+
+	users, err := fillUserResponses(ctx, tx, userModels)
+	if err != nil {
+		return nil, err
+	}
+
+	// ユーザーIDをキーとするUserのマップを作成
+	userMap := make(map[int64]User)
+	for _, user := range users {
+		userMap[user.ID] = user
+	}
+
+	// Livestreams を一括取得して fillLivestreamResponses で処理
+	var livestreamModels []*LivestreamModel
+	if len(livestreamIDs) > 0 {
+		query, args, err := sqlx.In("SELECT * FROM livestreams WHERE id IN (?)", livestreamIDs)
+		if err != nil {
+			return nil, err
+		}
+		query = tx.Rebind(query)
+		if err := tx.SelectContext(ctx, &livestreamModels, query, args...); err != nil {
+			return nil, err
+		}
+	}
+
+	livestreams, err := fillLivestreamResponses(ctx, tx, livestreamModels)
+	if err != nil {
+		return nil, err
+	}
+
+	// ライブストリームIDをキーとするLivestreamのマップを作成
+	livestreamMap := make(map[int64]Livestream)
+	for _, livestream := range livestreams {
+		livestreamMap[livestream.ID] = livestream
+	}
+
+	// 最終的な Livecomment のリストを作成
+	livecomments := make([]Livecomment, len(livecommentModels))
+	for i, livecommentModel := range livecommentModels {
+		// ユーザー情報を取得
+		commentOwner, ok := userMap[livecommentModel.UserID]
+		if !ok {
+			return nil, fmt.Errorf("user not found for livecomment id: %d", livecommentModel.ID)
+		}
+
+		// ライブストリーム情報を取得
+		livestream, ok := livestreamMap[livecommentModel.LivestreamID]
+		if !ok {
+			return nil, fmt.Errorf("livestream not found for livecomment id: %d", livecommentModel.ID)
+		}
+
+		// Livecomment オブジェクトを生成
+		livecomments[i] = Livecomment{
+			ID:         livecommentModel.ID,
+			User:       commentOwner,
+			Livestream: livestream,
+			Comment:    livecommentModel.Comment,
+			Tip:        livecommentModel.Tip,
+			CreatedAt:  livecommentModel.CreatedAt,
+		}
+	}
+
+	return livecomments, nil
 }
 
 func fillLivecommentResponse(ctx context.Context, tx *sqlx.Tx, livecommentModel LivecommentModel) (Livecomment, error) {
