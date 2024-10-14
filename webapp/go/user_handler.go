@@ -467,6 +467,100 @@ func verifyUserSession(c echo.Context) error {
 	return nil
 }
 
+func fillUserResponses(ctx context.Context, tx *sqlx.Tx, userModels []UserModel) ([]User, error) {
+	if len(userModels) == 0 {
+		return []User{}, nil
+	}
+
+	// ユーザーIDのリストを取得
+	userIDs := make([]int64, len(userModels))
+	for i, userModel := range userModels {
+		userIDs[i] = userModel.ID
+	}
+
+	// テーマ情報を一括取得
+	var themeModels []ThemeModel
+	if len(userIDs) > 0 {
+		query, args, err := sqlx.In("SELECT * FROM themes WHERE user_id IN (?)", userIDs)
+		if err != nil {
+			return nil, err
+		}
+		query = tx.Rebind(query)
+		if err := tx.SelectContext(ctx, &themeModels, query, args...); err != nil {
+			return nil, err
+		}
+	}
+
+	// ユーザーIDをキーとしたテーマのマップを作成
+	themeMap := make(map[int64]ThemeModel)
+	for _, theme := range themeModels {
+		themeMap[theme.UserID] = theme
+	}
+
+	// アイコン情報を一括取得
+	var iconData []struct {
+		UserID int64  `db:"user_id"`
+		Image  []byte `db:"image"`
+	}
+	if len(userIDs) > 0 {
+		query, args, err := sqlx.In("SELECT user_id, image FROM icons WHERE user_id IN (?)", userIDs)
+		if err != nil {
+			return nil, err
+		}
+		query = tx.Rebind(query)
+		if err := tx.SelectContext(ctx, &iconData, query, args...); err != nil {
+			return nil, err
+		}
+	}
+
+	// アイコン情報をユーザーIDをキーとしたマップに保存
+	iconMap := make(map[int64][]byte)
+	for _, data := range iconData {
+		iconMap[data.UserID] = data.Image
+	}
+
+	// 結果のユーザースライスを作成
+	users := make([]User, len(userModels))
+	for i, userModel := range userModels {
+		// テーマの取得
+		theme, ok := themeMap[userModel.ID]
+		if !ok {
+			// テーマが存在しない場合のデフォルト値
+			theme = ThemeModel{DarkMode: false}
+		}
+
+		// アイコンの取得
+		image, ok := iconMap[userModel.ID]
+		if !ok {
+			// アイコンが存在しない場合、フォールバック
+			var err error
+			image, err = os.ReadFile(fallbackImage)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// アイコンハッシュの計算とキャッシュ
+		iconHash := getIconHash(image)
+		iconHashCache.Set(userModel.Name, iconHash)
+
+		// Userの生成
+		users[i] = User{
+			ID:          userModel.ID,
+			Name:        userModel.Name,
+			DisplayName: userModel.DisplayName,
+			Description: userModel.Description,
+			Theme: Theme{
+				ID:       theme.ID,
+				DarkMode: theme.DarkMode,
+			},
+			IconHash: iconHash,
+		}
+	}
+
+	return users, nil
+}
+
 func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (User, error) {
 	themeModel := ThemeModel{}
 	if err := tx.GetContext(ctx, &themeModel, "SELECT * FROM themes WHERE user_id = ?", userModel.ID); err != nil {
