@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -85,10 +86,66 @@ type PostIconResponse struct {
 	ID int64 `json:"id"`
 }
 
+type IconHash struct {
+	IconHash   string
+	ExpireTime time.Time
+}
+
+type IconHashCache struct {
+	mu  *sync.RWMutex
+	m   map[string]*IconHash
+	ttl time.Duration
+}
+
+func (c *IconHashCache) Get(username string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	iconHash, ok := c.m[username]
+	if !ok {
+		return ""
+	}
+
+	if iconHash.ExpireTime.Before(time.Now()) {
+		c.mu.Lock()
+		delete(iconHashCache.m, username)
+		c.mu.Unlock()
+		return ""
+	}
+
+	return iconHash.IconHash
+}
+
+func (c *IconHashCache) Set(username string, iconHash string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.m[username] = &IconHash{
+		IconHash:   iconHash,
+		ExpireTime: time.Now().Add(c.ttl),
+	}
+}
+
+var iconHashCache = &IconHashCache{
+	mu:  new(sync.RWMutex),
+	m:   make(map[string]*IconHash, 1000),
+	ttl: 100 * time.Second,
+	// ttl: 1000 * time.Millisecond,
+}
+
 func getIconHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
 	username := c.Param("username")
+
+	cachedIconHash := iconHashCache.Get(username)
+	ifNoneMatch := c.Request().Header.Get("If-None-Match")
+	if len(ifNoneMatch) > 2 {
+		ifNoneMatch = ifNoneMatch[1 : len(ifNoneMatch)-1]
+	}
+	if ifNoneMatch != "" && cachedIconHash == ifNoneMatch {
+		return c.NoContent(http.StatusNotModified)
+	}
 
 	tx, err := dbConn.BeginTxx(ctx, nil)
 	if err != nil {
@@ -112,7 +169,11 @@ func getIconHandler(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user icon: "+err.Error())
 		}
 	}
-
+	iconHash := getIconHash(image)
+	iconHashCache.Set(username, iconHash)
+	if ifNoneMatch != "" && iconHash == ifNoneMatch {
+		return c.NoContent(http.StatusNotModified)
+	}
 	return c.Blob(http.StatusOK, "image/jpeg", image)
 }
 
@@ -157,6 +218,14 @@ func postIconHandler(c echo.Context) error {
 	if err := tx.Commit(); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
+
+	// get user name
+	userModel := UserModel{}
+	if err := dbConn.GetContext(c.Request().Context(), &userModel, "SELECT * FROM users WHERE id = ?", userID); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user: "+err.Error())
+	}
+	iconHash := getIconHash(req.Image)
+	iconHashCache.Set(userModel.Name, iconHash)
 
 	return c.JSON(http.StatusCreated, &PostIconResponse{
 		ID: iconID,
@@ -414,7 +483,8 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 			return User{}, err
 		}
 	}
-	iconHash := sha256.Sum256(image)
+	iconHash := getIconHash(image)
+	iconHashCache.Set(userModel.Name, iconHash)
 
 	user := User{
 		ID:          userModel.ID,
@@ -425,8 +495,12 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 			ID:       themeModel.ID,
 			DarkMode: themeModel.DarkMode,
 		},
-		IconHash: fmt.Sprintf("%x", iconHash),
+		IconHash: iconHash,
 	}
 
 	return user, nil
+}
+
+func getIconHash(image []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(image))
 }
