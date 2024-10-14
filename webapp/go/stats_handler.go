@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 )
 
@@ -92,34 +93,85 @@ func getUserStatisticsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get users: "+err.Error())
 	}
 
+	// ランク算出
 	var ranking UserRanking
+
+	// usersのIDリストを抽出
+	userIDs := make([]int64, 0, len(users))
+	userNames := make(map[int64]string) // ユーザーIDと名前のマッピング
 	for _, user := range users {
-		var reactions int64
-		query := `
-		SELECT COUNT(*) FROM users u
-		INNER JOIN livestreams l ON l.user_id = u.id
-		INNER JOIN reactions r ON r.livestream_id = l.id
-		WHERE u.id = ?`
-		if err := tx.GetContext(ctx, &reactions, query, user.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count reactions: "+err.Error())
-		}
+		userIDs = append(userIDs, user.ID)
+		userNames[user.ID] = user.Name
+	}
 
-		var tips int64
-		query = `
-		SELECT IFNULL(SUM(l2.tip), 0) FROM users u
-		INNER JOIN livestreams l ON l.user_id = u.id	
-		INNER JOIN livecomments l2 ON l2.livestream_id = l.id
-		WHERE u.id = ?`
-		if err := tx.GetContext(ctx, &tips, query, user.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count tips: "+err.Error())
-		}
+	// reactionsを一度に取得（JOINなし）
+	reactionsMap := make(map[int64]int64)
+	queryReactions := `
+    SELECT l.user_id, COUNT(r.id) as reactions_count
+    FROM reactions r
+    INNER JOIN livestreams l ON r.livestream_id = l.id
+    WHERE l.user_id IN (?)
+    GROUP BY l.user_id
+`
+	query, args, err := sqlx.In(queryReactions, userIDs)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to build reactions query: "+err.Error())
+	}
+	query = tx.Rebind(query)
+	rows, err := tx.QueryxContext(ctx, query, args...)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch reactions: "+err.Error())
+	}
+	defer rows.Close()
 
-		score := reactions + tips
+	for rows.Next() {
+		var userID, reactions int64
+		if err := rows.Scan(&userID, &reactions); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to scan reactions: "+err.Error())
+		}
+		reactionsMap[userID] = reactions
+	}
+
+	// tipsを一度に取得（JOINなし）
+	tipsMap := make(map[int64]int64)
+	queryTips := `
+    SELECT l.user_id, IFNULL(SUM(lc.tip), 0) as total_tips
+    FROM livecomments lc
+    INNER JOIN livestreams l ON lc.livestream_id = l.id
+    WHERE l.user_id IN (?)
+    GROUP BY l.user_id
+`
+	query, args, err = sqlx.In(queryTips, userIDs)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to build tips query: "+err.Error())
+	}
+	query = tx.Rebind(query)
+	rows, err = tx.QueryxContext(ctx, query, args...)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch tips: "+err.Error())
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, totalTips int64
+		if err := rows.Scan(&userID, &totalTips); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to scan tips: "+err.Error())
+		}
+		tipsMap[userID] = totalTips
+	}
+
+	// reactionsとtipsを用いてスコア計算
+	for _, user := range users {
+		reactions := reactionsMap[user.ID]
+		totalTips := tipsMap[user.ID]
+		score := reactions + totalTips
+
 		ranking = append(ranking, UserRankingEntry{
 			Username: user.Name,
 			Score:    score,
 		})
 	}
+
 	sort.Sort(ranking)
 
 	var rank int64 = 1
@@ -133,7 +185,7 @@ func getUserStatisticsHandler(c echo.Context) error {
 
 	// リアクション数
 	var totalReactions int64
-	query := `SELECT COUNT(*) FROM users u 
+	query = `SELECT COUNT(*) FROM users u 
     INNER JOIN livestreams l ON l.user_id = u.id 
     INNER JOIN reactions r ON r.livestream_id = l.id
     WHERE u.name = ?
