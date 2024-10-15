@@ -4,6 +4,7 @@ package main
 // sqlx的な参考: https://jmoiron.github.io/sqlx/
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -99,7 +100,8 @@ func connectDB(logger echo.Logger) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(10)
+	db.SetMaxOpenConns(30)
+	db.SetMaxIdleConns(30)
 
 	if err := db.Ping(); err != nil {
 		return nil, err
@@ -229,4 +231,9 @@ func errorResponseHandler(err error, c echo.Context) {
 	if e := c.JSON(http.StatusInternalServerError, &ErrorResponse{Error: err.Error()}); e != nil {
 		c.Logger().Errorf("%+v", e)
 	}
+}
+
+type SqlxConn interface {
+	GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+	SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
 }

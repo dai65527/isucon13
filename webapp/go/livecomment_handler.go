@@ -78,11 +78,11 @@ func getLivecommentsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "livestream_id in path must be integer")
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
+	tx, err := dbConn.Connx(ctx)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
 	}
-	defer tx.Rollback()
+	defer tx.Close()
 
 	query := "SELECT * FROM livecomments WHERE livestream_id = ? ORDER BY created_at DESC"
 	if c.QueryParam("limit") != "" {
@@ -107,10 +107,6 @@ func getLivecommentsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livecomments: "+err.Error())
 	}
 
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
-	}
-
 	return c.JSON(http.StatusOK, livecomments)
 }
 
@@ -131,11 +127,11 @@ func getNgwords(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "livestream_id in path must be integer")
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
+	tx, err := dbConn.Connx(ctx)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
 	}
-	defer tx.Rollback()
+	defer tx.Close()
 
 	var ngWords []*NGWord
 	if err := tx.SelectContext(ctx, &ngWords, "SELECT * FROM ng_words WHERE user_id = ? AND livestream_id = ? ORDER BY created_at DESC", userID, livestreamID); err != nil {
@@ -144,10 +140,6 @@ func getNgwords(c echo.Context) error {
 		} else {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get NG words: "+err.Error())
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
 
 	return c.JSON(http.StatusOK, ngWords)
@@ -417,7 +409,7 @@ func moderateHandler(c echo.Context) error {
 	})
 }
 
-func fillLivecommentResponses(ctx context.Context, tx *sqlx.Tx, livecommentModels []LivecommentModel) ([]Livecomment, error) {
+func fillLivecommentResponses(ctx context.Context, tx *sqlx.Conn, livecommentModels []LivecommentModel) ([]Livecomment, error) {
 	if len(livecommentModels) == 0 {
 		return []Livecomment{}, nil
 	}
@@ -507,7 +499,7 @@ func fillLivecommentResponses(ctx context.Context, tx *sqlx.Tx, livecommentModel
 	return livecomments, nil
 }
 
-func fillLivecommentResponse(ctx context.Context, tx *sqlx.Tx, livecommentModel LivecommentModel) (Livecomment, error) {
+func fillLivecommentResponse(ctx context.Context, tx SqlxConn, livecommentModel LivecommentModel) (Livecomment, error) {
 	commentOwnerModel := UserModel{}
 	if err := tx.GetContext(ctx, &commentOwnerModel, "SELECT * FROM users WHERE id = ?", livecommentModel.UserID); err != nil {
 		return Livecomment{}, err
@@ -538,7 +530,7 @@ func fillLivecommentResponse(ctx context.Context, tx *sqlx.Tx, livecommentModel 
 	return livecomment, nil
 }
 
-func fillLivecommentReportResponse(ctx context.Context, tx *sqlx.Tx, reportModel LivecommentReportModel) (LivecommentReport, error) {
+func fillLivecommentReportResponse(ctx context.Context, tx SqlxConn, reportModel LivecommentReportModel) (LivecommentReport, error) {
 	reporterModel := UserModel{}
 	if err := tx.GetContext(ctx, &reporterModel, "SELECT * FROM users WHERE id = ?", reportModel.UserID); err != nil {
 		return LivecommentReport{}, err

@@ -46,11 +46,11 @@ func getReactionsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "livestream_id in path must be integer")
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
+	tx, err := dbConn.Connx(ctx)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
 	}
-	defer tx.Rollback()
+	defer tx.Close()
 
 	query := "SELECT * FROM reactions WHERE livestream_id = ? ORDER BY created_at DESC"
 	if c.QueryParam("limit") != "" {
@@ -69,10 +69,6 @@ func getReactionsHandler(c echo.Context) error {
 	reactions, err := fillReactionResponses(ctx, tx, reactionModels)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reactions: "+err.Error())
-	}
-
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
 
 	return c.JSON(http.StatusOK, reactions)
@@ -136,7 +132,7 @@ func postReactionHandler(c echo.Context) error {
 	return c.JSON(http.StatusCreated, reaction)
 }
 
-func fillReactionResponses(ctx context.Context, tx *sqlx.Tx, reactionModels []ReactionModel) ([]Reaction, error) {
+func fillReactionResponses(ctx context.Context, tx *sqlx.Conn, reactionModels []ReactionModel) ([]Reaction, error) {
 	if len(reactionModels) == 0 {
 		return []Reaction{}, nil
 	}

@@ -13,19 +13,15 @@ type PaymentResult struct {
 func GetPaymentResult(c echo.Context) error {
 	ctx := c.Request().Context()
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
+	tx, err := dbConn.Connx(ctx)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
 	}
-	defer tx.Rollback()
+	defer tx.Close()
 
 	var totalTip int64
 	if err := tx.GetContext(ctx, &totalTip, "SELECT IFNULL(SUM(tip), 0) FROM livecomments"); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to count total tip: "+err.Error())
-	}
-
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
 
 	return c.JSON(http.StatusOK, &PaymentResult{
