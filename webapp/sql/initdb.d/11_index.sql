@@ -5,3 +5,4 @@ alter table livestream_tags add index idx_livestreamtags_livestreamid (livestrea
 alter table themes add index idx_themes_userid (user_id);
 alter table livecomments add index idx_livecomments_livestreamid (livestream_id);
 alter table reactions add index idx_reactions_livestreamid (livestream_id);
+alter table ng_words add index idx_ngwords_livestreamid (livestream_id);
