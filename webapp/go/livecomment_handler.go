@@ -427,7 +427,7 @@ func fillLivecommentResponses(ctx context.Context, tx *sqlx.Conn, livecommentMod
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &userModels, query, args...); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get users: %w", err)
 		}
 	}
 
@@ -451,13 +451,13 @@ func fillLivecommentResponses(ctx context.Context, tx *sqlx.Conn, livecommentMod
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &livestreamModels, query, args...); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get livestreams: %w", err)
 		}
 	}
 
 	livestreams, err := fillLivestreamResponses(ctx, tx, livestreamModels)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fill livestreams: %w", err)
 	}
 
 	// ライブストリームIDをキーとするLivestreamのマップを作成

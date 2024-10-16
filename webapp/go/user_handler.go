@@ -503,7 +503,7 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 	if len(userIDs) > 0 {
 		query, args, err := sqlx.In("SELECT * FROM themes WHERE user_id IN (?)", userIDs)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to construct IN query: %w", err)
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &themeModels, query, args...); err != nil {
@@ -525,11 +525,11 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 	if len(userIDs) > 0 {
 		query, args, err := sqlx.In("SELECT user_id, image FROM icons WHERE user_id IN (?)", userIDs)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to construct IN query: %w", err)
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &iconData, query, args...); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get icons: %w", err)
 		}
 	}
 
@@ -556,7 +556,7 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 			var err error
 			image, err = os.ReadFile(fallbackImage)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to read fallback image: %w", err)
 			}
 		}
 

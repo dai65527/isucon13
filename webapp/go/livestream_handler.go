@@ -474,18 +474,18 @@ func fillLivestreamResponses(ctx context.Context, tx *sqlx.Conn, livestreamModel
 	if len(userIDs) > 0 {
 		query, args, err := sqlx.In("SELECT * FROM users WHERE id IN (?)", userIDs)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to construct IN query: %w", err)
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &userModels, query, args...); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get users: %w", err)
 		}
 	}
 
 	// ユーザー情報をfillUserResponsesを使って一括処理
 	users, err := fillUserResponses(ctx, tx, userModels)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fill users: %w", err)
 	}
 
 	// ユーザーIDをキーとしたUserのマップを作成
@@ -499,11 +499,11 @@ func fillLivestreamResponses(ctx context.Context, tx *sqlx.Conn, livestreamModel
 	if len(livestreamIDs) > 0 {
 		query, args, err := sqlx.In("SELECT * FROM livestream_tags WHERE livestream_id IN (?)", livestreamIDs)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to construct IN query: %w", err)
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &livestreamTagModels, query, args...); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get livestream_tags: %w", err)
 		}
 	}
 
@@ -518,11 +518,11 @@ func fillLivestreamResponses(ctx context.Context, tx *sqlx.Conn, livestreamModel
 	if len(tagIDs) > 0 {
 		query, args, err := sqlx.In("SELECT * FROM tags WHERE id IN (?)", tagIDs)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to construct IN query: %w", err)
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &tagModels, query, args...); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get tags: %w", err)
 		}
 	}
 
