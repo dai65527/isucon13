@@ -15,7 +15,7 @@ import (
 
 var (
 	basicViewerScenarioRandSourceMu sync.Mutex
-	basicViewerScenarioRandSource = rand.New(rand.NewSource(63877281473681))
+	basicViewerScenarioRandSource   = rand.New(rand.NewSource(63877281473681))
 )
 
 func BasicViewerScenario(
@@ -175,7 +175,7 @@ func ViewerSpamScenario(
 	if isModerated {
 		_, _, err := viewer.PostLivecomment(ctx, livestream.ID, livestream.Owner.Name, comment.Comment, &scheduler.Tip{}, isupipe.WithStatusCode(http.StatusBadRequest))
 		if err != nil {
-			lgr.Warnf("viewer_spam: failed to post livecomment (moderated spam): %s\n", err.Error())
+			lgr.Warnf("viewer_spam: failed to post livecomment (moderated spam): %s\nlivestream: %d, comment: %s, ngword: %s", err.Error(), livestream.ID, comment.Comment, comment.NgWord)
 			return err
 		}
 	} else {

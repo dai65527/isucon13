@@ -138,7 +138,7 @@ func getUserStatisticsHandler(c echo.Context) error {
     SELECT l.user_id, IFNULL(SUM(lc.tip), 0) as total_tips
     FROM livecomments lc
     INNER JOIN livestreams l ON lc.livestream_id = l.id
-    WHERE l.user_id IN (?)
+    WHERE l.user_id IN (?) AND lc.is_deleted = 0
     GROUP BY l.user_id
 `
 	query, args, err = sqlx.In(queryTips, userIDs)
@@ -204,7 +204,7 @@ func getUserStatisticsHandler(c echo.Context) error {
 
 	for _, livestream := range livestreams {
 		var livecomments []*LivecommentModel
-		if err := tx.SelectContext(ctx, &livecomments, "SELECT * FROM livecomments WHERE livestream_id = ?", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err := tx.SelectContext(ctx, &livecomments, "SELECT * FROM livecomments WHERE livestream_id = ? and is_deleted = 0", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livecomments: "+err.Error())
 		}
 
@@ -325,7 +325,7 @@ func getLivestreamStatisticsHandler(c echo.Context) error {
 	queryTips := `
     SELECT livestream_id, IFNULL(SUM(tip), 0) as total_tips
     FROM livecomments
-    WHERE livestream_id IN (?)
+    WHERE livestream_id IN (?) and is_deleted = 0
     GROUP BY livestream_id
 `
 	query, args, err = sqlx.In(queryTips, livestreamIDs)
@@ -378,7 +378,7 @@ func getLivestreamStatisticsHandler(c echo.Context) error {
 
 	// 最大チップ額
 	var maxTip int64
-	if err := tx.GetContext(ctx, &maxTip, `SELECT IFNULL(MAX(tip), 0) FROM livestreams l INNER JOIN livecomments l2 ON l2.livestream_id = l.id WHERE l.id = ?`, livestreamID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := tx.GetContext(ctx, &maxTip, `SELECT IFNULL(MAX(tip), 0) FROM livestreams l INNER JOIN livecomments l2 ON l2.livestream_id = l.id WHERE l.id = ? and l2.is_deleted = 0`, livestreamID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to find maximum tip livecomment: "+err.Error())
 	}
 
