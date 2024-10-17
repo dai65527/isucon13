@@ -96,11 +96,11 @@ func postReactionHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "failed to decode the request body as json")
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
+	tx, err := dbConn.Connx(ctx)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
 	}
-	defer tx.Rollback()
+	defer tx.Close()
 
 	reactionModel := ReactionModel{
 		UserID:       int64(userID),
@@ -109,7 +109,7 @@ func postReactionHandler(c echo.Context) error {
 		CreatedAt:    time.Now().Unix(),
 	}
 
-	result, err := tx.NamedExecContext(ctx, "INSERT INTO reactions (user_id, livestream_id, emoji_name, created_at) VALUES (:user_id, :livestream_id, :emoji_name, :created_at)", reactionModel)
+	result, err := tx.ExecContext(ctx, "INSERT INTO reactions (user_id, livestream_id, emoji_name, created_at) VALUES (?, ?, ?, ?)", reactionModel.UserID, reactionModel.LivestreamID, reactionModel.EmojiName, reactionModel.CreatedAt)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert reaction: "+err.Error())
 	}
@@ -123,10 +123,6 @@ func postReactionHandler(c echo.Context) error {
 	reaction, err := fillReactionResponse(ctx, tx, reactionModel)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
-	}
-
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
 
 	return c.JSON(http.StatusCreated, reaction)
@@ -221,7 +217,7 @@ func fillReactionResponses(ctx context.Context, tx *sqlx.Conn, reactionModels []
 	return reactions, nil
 }
 
-func fillReactionResponse(ctx context.Context, tx *sqlx.Tx, reactionModel ReactionModel) (Reaction, error) {
+func fillReactionResponse(ctx context.Context, tx SqlxConn, reactionModel ReactionModel) (Reaction, error) {
 	userModel := UserModel{}
 	if err := tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", reactionModel.UserID); err != nil {
 		return Reaction{}, err
