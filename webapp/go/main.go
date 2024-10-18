@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -110,10 +111,41 @@ func connectDB(logger echo.Logger) (*sqlx.DB, error) {
 	return db, nil
 }
 
+type ThemeCache struct {
+	mu             *sync.RWMutex
+	userIDThemeMap map[int64]bool
+}
+
+func (c *ThemeCache) Set(userID int64, darkMode bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.userIDThemeMap[userID] = darkMode
+}
+
+func (c *ThemeCache) Get(userID int64) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.userIDThemeMap[userID]
+}
+
+var themeCache = &ThemeCache{
+	mu:             new(sync.RWMutex),
+	userIDThemeMap: make(map[int64]bool, 1000),
+}
+
 func initializeHandler(c echo.Context) error {
 	if out, err := exec.Command("../sql/init.sh").CombinedOutput(); err != nil {
 		c.Logger().Warnf("init.sh failed with err=%s", string(out))
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to initialize: "+err.Error())
+	}
+
+	var themes []*ThemeModel
+	err := dbConn.SelectContext(c.Request().Context(), &themes, "SELECT * FROM themes")
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livecomments: "+err.Error())
+	}
+	for _, theme := range themes {
+		themeCache.Set(theme.UserID, theme.DarkMode)
 	}
 
 	c.Request().Header.Add("Content-Type", "application/json;charset=utf-8")

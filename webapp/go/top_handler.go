@@ -1,8 +1,6 @@
 package main
 
 import (
-	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -25,11 +23,6 @@ type TagsResponse struct {
 func getTagHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
-	// tx, err := dbConn.BeginTxx(ctx, nil)
-	// if err != nil {
-	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin new transaction: : "+err.Error()+err.Error())
-	// }
-	// defer tx.Rollback()
 	tx, err := dbConn.Connx(ctx)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
@@ -40,10 +33,6 @@ func getTagHandler(c echo.Context) error {
 	if err := tx.SelectContext(ctx, &tagModels, "SELECT * FROM tags"); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get tags: "+err.Error())
 	}
-
-	// if err := tx.Commit(); err != nil {
-	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
-	// }
 
 	tags := make([]*Tag, len(tagModels))
 	for i := range tagModels {
@@ -60,48 +49,18 @@ func getTagHandler(c echo.Context) error {
 // 配信者のテーマ取得API
 // GET /api/user/:username/theme
 func getStreamerThemeHandler(c echo.Context) error {
-	ctx := c.Request().Context()
-
-	if err := verifyUserSession(c); err != nil {
+	userID, err := verifyUserSessionWithUserID(c)
+	if err != nil {
 		// echo.NewHTTPErrorが返っているのでそのまま出力
 		c.Logger().Printf("verifyUserSession: %+v\n", err)
 		return err
 	}
 
-	username := c.Param("username")
-
-	// tx, err := dbConn.BeginTxx(ctx, nil)
-	// if err != nil {
-	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
-	// }
-	// defer tx.Rollback()
-	tx, err := dbConn.Connx(ctx)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
-	}
-	defer tx.Close()
-
-	userModel := UserModel{}
-	err = tx.GetContext(ctx, &userModel, "SELECT id FROM users WHERE name = ?", username)
-	if errors.Is(err, sql.ErrNoRows) {
-		return echo.NewHTTPError(http.StatusNotFound, "not found user that has the given username")
-	}
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user: "+err.Error())
-	}
-
-	themeModel := ThemeModel{}
-	if err := tx.GetContext(ctx, &themeModel, "SELECT * FROM themes WHERE user_id = ?", userModel.ID); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user theme: "+err.Error())
-	}
-
-	// if err := tx.Commit(); err != nil {
-	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
-	// }
+	darkmode := themeCache.Get(userID)
 
 	theme := Theme{
-		ID:       themeModel.ID,
-		DarkMode: themeModel.DarkMode,
+		ID:       userID,
+		DarkMode: darkmode,
 	}
 
 	return c.JSON(http.StatusOK, theme)

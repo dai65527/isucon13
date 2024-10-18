@@ -307,11 +307,11 @@ func registerHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to generate hashed password: "+err.Error())
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
+	tx, err := dbConn.Connx(ctx)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
 	}
-	defer tx.Rollback()
+	defer tx.Close()
 
 	userModel := UserModel{
 		Name:           req.Name,
@@ -320,7 +320,7 @@ func registerHandler(c echo.Context) error {
 		HashedPassword: string(hashedPassword),
 	}
 
-	result, err := tx.NamedExecContext(ctx, "INSERT INTO users (name, display_name, description, password) VALUES(:name, :display_name, :description, :password)", userModel)
+	result, err := tx.ExecContext(ctx, "INSERT INTO users (name, display_name, description, password) VALUES(?, ?, ?, ?)", userModel.Name, userModel.DisplayName, userModel.Description, userModel.HashedPassword)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert user: "+err.Error())
 	}
@@ -332,25 +332,15 @@ func registerHandler(c echo.Context) error {
 
 	userModel.ID = userID
 
-	themeModel := ThemeModel{
-		UserID:   userID,
-		DarkMode: req.Theme.DarkMode,
-	}
-	if _, err := tx.NamedExecContext(ctx, "INSERT INTO themes (user_id, dark_mode) VALUES(:user_id, :dark_mode)", themeModel); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert user theme: "+err.Error())
-	}
-
 	if out, err := exec.Command("pdnsutil", "add-record", "u.isucon.dev", req.Name, "A", "0", powerDNSSubdomainAddress).CombinedOutput(); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, string(out)+": "+err.Error())
 	}
 
+	themeCache.Set(userID, req.Theme.DarkMode)
+
 	user, err := fillUserResponse(ctx, tx, userModel)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill user: "+err.Error())
-	}
-
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
 
 	return c.JSON(http.StatusCreated, user)
@@ -432,11 +422,6 @@ func getUserHandler(c echo.Context) error {
 
 	username := c.Param("username")
 
-	// tx, err := dbConn.BeginTxx(ctx, nil)
-	// if err != nil {
-	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
-	// }
-	// defer tx.Rollback()
 	tx, err := dbConn.Connx(ctx)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
@@ -455,10 +440,6 @@ func getUserHandler(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill user: "+err.Error())
 	}
-
-	// if err := tx.Commit(); err != nil {
-	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
-	// }
 
 	return c.JSON(http.StatusOK, user)
 }
@@ -487,6 +468,30 @@ func verifyUserSession(c echo.Context) error {
 	return nil
 }
 
+func verifyUserSessionWithUserID(c echo.Context) (int64, error) {
+	sess, err := session.Get(defaultSessionIDKey, c)
+	if err != nil {
+		return 0, echo.NewHTTPError(http.StatusUnauthorized, "failed to get session")
+	}
+
+	sessionExpires, ok := sess.Values[defaultSessionExpiresKey]
+	if !ok {
+		return 0, echo.NewHTTPError(http.StatusForbidden, "failed to get EXPIRES value from session")
+	}
+
+	userID, ok := sess.Values[defaultUserIDKey].(int64)
+	if !ok {
+		return 0, echo.NewHTTPError(http.StatusUnauthorized, "failed to get USERID value from session")
+	}
+
+	now := time.Now()
+	if now.Unix() > sessionExpires.(int64) {
+		return 0, echo.NewHTTPError(http.StatusUnauthorized, "session has expired")
+	}
+
+	return userID, nil
+}
+
 func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserModel) ([]User, error) {
 	if len(userModels) == 0 {
 		return []User{}, nil
@@ -496,25 +501,6 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 	userIDs := make([]int64, len(userModels))
 	for i, userModel := range userModels {
 		userIDs[i] = userModel.ID
-	}
-
-	// テーマ情報を一括取得
-	var themeModels []ThemeModel
-	if len(userIDs) > 0 {
-		query, args, err := sqlx.In("SELECT * FROM themes WHERE user_id IN (?)", userIDs)
-		if err != nil {
-			return nil, fmt.Errorf("failed to construct IN query: %w", err)
-		}
-		query = tx.Rebind(query)
-		if err := tx.SelectContext(ctx, &themeModels, query, args...); err != nil {
-			return nil, err
-		}
-	}
-
-	// ユーザーIDをキーとしたテーマのマップを作成
-	themeMap := make(map[int64]ThemeModel)
-	for _, theme := range themeModels {
-		themeMap[theme.UserID] = theme
 	}
 
 	// アイコン情報を一括取得
@@ -542,13 +528,6 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 	// 結果のユーザースライスを作成
 	users := make([]User, len(userModels))
 	for i, userModel := range userModels {
-		// テーマの取得
-		theme, ok := themeMap[userModel.ID]
-		if !ok {
-			// テーマが存在しない場合のデフォルト値
-			theme = ThemeModel{DarkMode: false}
-		}
-
 		// アイコンの取得
 		image, ok := iconMap[userModel.ID]
 		if !ok {
@@ -571,8 +550,8 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 			DisplayName: userModel.DisplayName,
 			Description: userModel.Description,
 			Theme: Theme{
-				ID:       theme.ID,
-				DarkMode: theme.DarkMode,
+				ID:       userModel.ID,
+				DarkMode: themeCache.Get(userModel.ID),
 			},
 			IconHash: iconHash,
 		}
@@ -582,11 +561,6 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 }
 
 func fillUserResponse(ctx context.Context, tx SqlxConn, userModel UserModel) (User, error) {
-	themeModel := ThemeModel{}
-	if err := tx.GetContext(ctx, &themeModel, "SELECT * FROM themes WHERE user_id = ?", userModel.ID); err != nil {
-		return User{}, err
-	}
-
 	var image []byte
 	if err := tx.GetContext(ctx, &image, "SELECT image FROM icons WHERE user_id = ?", userModel.ID); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -606,8 +580,8 @@ func fillUserResponse(ctx context.Context, tx SqlxConn, userModel UserModel) (Us
 		DisplayName: userModel.DisplayName,
 		Description: userModel.Description,
 		Theme: Theme{
-			ID:       themeModel.ID,
-			DarkMode: themeModel.DarkMode,
+			ID:       userModel.ID,
+			DarkMode: themeCache.Get(userModel.ID),
 		},
 		IconHash: iconHash,
 	}
