@@ -97,24 +97,36 @@ func reserveLivestreamHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "bad reservation time range")
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
+	startAts := make([]int64, 0, 10)
+	for startAt := req.StartAt; startAt+3600 <= req.EndAt; startAt += 3600 {
+		startAts = append(startAts, startAt)
 	}
-	defer tx.Rollback()
 
-	// 予約枠をみて、予約が可能か調べる
-	// NOTE: 並列な予約のoverbooking防止にFOR UPDATEが必要
-	var slots []*ReservationSlotModel
-	if err := tx.SelectContext(ctx, &slots, "SELECT * FROM reservation_slots WHERE start_at >= ? AND end_at <= ? FOR UPDATE", req.StartAt, req.EndAt); err != nil {
-		c.Logger().Warnf("予約枠一覧取得でエラー発生: %+v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get reservation_slots: "+err.Error())
+	// tx, err := dbConn.BeginTxx(ctx, nil)
+	// if err != nil {
+	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
+	// }
+	// defer tx.Rollback()
+	tx, err := dbConn.Connx(ctx)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
 	}
-	for _, slot := range slots {
-		// c.Logger().Infof("%d ~ %d予約枠の残数 = %d\n", slot.StartAt, slot.EndAt, slot.Slot)
-		if slot.Slot < 1 {
-			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("予約期間 %d ~ %dに対して、予約区間 %d ~ %dが予約できません", termStartAt.Unix(), termEndAt.Unix(), req.StartAt, req.EndAt))
-		}
+	defer tx.Close()
+
+	query, args, err := sqlx.In("UPDATE reservation_slots SET slot = slot - 1 WHERE start_at IN (?) AND slot >= 1", startAts)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to build query: "+err.Error())
+	}
+
+	// `IN`クエリを構築した後に、クエリを安全に実行するために`Rebind`を使用
+	query = tx.Rebind(query)
+
+	rs, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to update reservation_slot: "+err.Error())
+	}
+	if rowsAffected, _ := rs.RowsAffected(); rowsAffected != int64(len(startAts)) {
+		return echo.NewHTTPError(http.StatusBadRequest, "failed to update reservation_slot: rows affected is not matched")
 	}
 
 	var (
@@ -129,11 +141,7 @@ func reserveLivestreamHandler(c echo.Context) error {
 		}
 	)
 
-	if _, err := tx.ExecContext(ctx, "UPDATE reservation_slots SET slot = slot - 1 WHERE start_at >= ? AND end_at <= ?", req.StartAt, req.EndAt); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to update reservation_slot: "+err.Error())
-	}
-
-	rs, err := tx.NamedExecContext(ctx, "INSERT INTO livestreams (user_id, title, description, playlist_url, thumbnail_url, start_at, end_at) VALUES(:user_id, :title, :description, :playlist_url, :thumbnail_url, :start_at, :end_at)", livestreamModel)
+	rs, err = tx.ExecContext(ctx, "INSERT INTO livestreams (user_id, title, description, playlist_url, thumbnail_url, start_at, end_at) VALUES(?, ?, ?, ?, ?, ?, ?)", int64(userID), req.Title, req.Description, req.PlaylistUrl, req.ThumbnailUrl, req.StartAt, req.EndAt)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert livestream: "+err.Error())
 	}
@@ -144,12 +152,17 @@ func reserveLivestreamHandler(c echo.Context) error {
 	}
 	livestreamModel.ID = livestreamID
 
-	// タグ追加
-	for _, tagID := range req.Tags {
-		if _, err := tx.NamedExecContext(ctx, "INSERT INTO livestream_tags (livestream_id, tag_id) VALUES (:livestream_id, :tag_id)", &LivestreamTagModel{
-			LivestreamID: livestreamID,
-			TagID:        tagID,
-		}); err != nil {
+	if len(req.Tags) > 0 {
+		insertTagQuery := "INSERT INTO livestream_tags (livestream_id, tag_id) VALUES "
+		args = make([]any, 0, len(req.Tags)*2)
+		for i, tagID := range req.Tags {
+			if i != 0 {
+				insertTagQuery += ", "
+			}
+			insertTagQuery += "(?, ?)"
+			args = append(args, livestreamID, tagID)
+		}
+		if _, err := tx.ExecContext(ctx, insertTagQuery, args...); err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert livestream tag: "+err.Error())
 		}
 	}
@@ -157,10 +170,6 @@ func reserveLivestreamHandler(c echo.Context) error {
 	livestream, err := fillLivestreamResponse(ctx, tx, *livestreamModel)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livestream: "+err.Error())
-	}
-
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
 
 	return c.JSON(http.StatusCreated, livestream)
