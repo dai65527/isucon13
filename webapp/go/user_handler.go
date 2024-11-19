@@ -159,27 +159,35 @@ func getIconHandler(c echo.Context) error {
 	defer tx.Close()
 
 	var user UserModel
-	if err := dbConn.GetContext(ctx, &user, "SELECT * FROM users WHERE name = ?", username); err != nil {
+	if err := dbConn.GetContext(ctx, &user, "SELECT id FROM users WHERE name = ?", username); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusNotFound, "not found user that has the given username")
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user: "+err.Error())
 	}
 
-	var image []byte
-	if err := dbConn.GetContext(ctx, &image, "SELECT image FROM icons WHERE user_id = ?", user.ID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return c.File(fallbackImage)
-		} else {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user icon: "+err.Error())
-		}
+	filePath := iconFilePath(user.ID)
+	image, err := os.ReadFile(filePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user icon: "+err.Error())
 	}
-	iconHash := getIconHash(image)
-	iconHashCache.Set(username, iconHash)
-	if ifNoneMatch != "" && iconHash == ifNoneMatch {
-		return c.NoContent(http.StatusNotModified)
+	if len(image) == 0 {
+		if err := dbConn.GetContext(ctx, &image, "SELECT image FROM icons WHERE user_id = ?", user.ID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return c.File(fallbackImage)
+			} else {
+				return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user icon: "+err.Error())
+			}
+		}
+		os.WriteFile(filePath, image, 0644)
+		iconHash := getIconHash(image)
+		iconHashCache.Set(username, iconHash)
 	}
 	return c.Blob(http.StatusOK, "image/jpeg", image)
+}
+
+func iconFilePath(userID int64) string {
+	return fmt.Sprintf("./icons/%d.png", userID)
 }
 
 func postIconHandler(c echo.Context) error {
@@ -200,11 +208,19 @@ func postIconHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "failed to decode the request body as json")
 	}
 
+	fileName := iconFilePath(userID)
+	err := os.WriteFile(fileName, req.Image, 0644)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to write icon file: "+err.Error())
+	}
+	iconHashCache.Set(sess.Values[defaultUsernameKey].(string), getIconHash(req.Image))
+
 	// tx, err := dbConn.BeginTxx(ctx, nil)
 	// if err != nil {
 	// 	return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
 	// }
 	// defer tx.Rollback()
+
 	tx, err := dbConn.Connx(ctx)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get connection: "+err.Error())
@@ -497,19 +513,33 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 		return []User{}, nil
 	}
 
-	// ユーザーIDのリストを取得
-	userIDs := make([]int64, len(userModels))
-	for i, userModel := range userModels {
-		userIDs[i] = userModel.ID
+	// アイコン情報を一括取得
+	noIconHashUserIDs := make([]int64, 0, len(userModels))
+	userIDNameMap := make(map[int64]string, len(userModels))
+	for _, userModel := range userModels {
+		userIDNameMap[userModel.ID] = userModel.Name
+		iconHash := iconHashCache.Get(userModel.Name)
+		if iconHash != "" {
+			continue
+		}
+		image, err := os.ReadFile(iconFilePath(userModel.ID))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("failed to read icon file: %w", err)
+		}
+		if len(image) != 0 {
+			iconHash := getIconHash(image)
+			iconHashCache.Set(userModel.Name, iconHash)
+		} else {
+			noIconHashUserIDs = append(noIconHashUserIDs, userModel.ID)
+		}
 	}
 
-	// アイコン情報を一括取得
 	var iconData []struct {
 		UserID int64  `db:"user_id"`
 		Image  []byte `db:"image"`
 	}
-	if len(userIDs) > 0 {
-		query, args, err := sqlx.In("SELECT user_id, image FROM icons WHERE user_id IN (?)", userIDs)
+	if len(noIconHashUserIDs) > 0 {
+		query, args, err := sqlx.In("SELECT user_id, image FROM icons WHERE user_id IN (?)", noIconHashUserIDs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to construct IN query: %w", err)
 		}
@@ -518,6 +548,18 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 			return nil, fmt.Errorf("failed to get icons: %w", err)
 		}
 	}
+
+	for _, data := range iconData {
+		iconHash := getIconHash(data.Image)
+		iconHashCache.Set(userIDNameMap[data.UserID], iconHash)
+	}
+
+	// FIXME: Globalで一回やればOK
+	fallbackImageByte, err := os.ReadFile(fallbackImage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read fallback image: %w", err)
+	}
+	fallbackImageHash := getIconHash(fallbackImageByte)
 
 	// アイコン情報をユーザーIDをキーとしたマップに保存
 	iconMap := make(map[int64][]byte)
@@ -528,20 +570,11 @@ func fillUserResponses(ctx context.Context, tx *sqlx.Conn, userModels []UserMode
 	// 結果のユーザースライスを作成
 	users := make([]User, len(userModels))
 	for i, userModel := range userModels {
-		// アイコンの取得
-		image, ok := iconMap[userModel.ID]
-		if !ok {
-			// アイコンが存在しない場合、フォールバック
-			var err error
-			image, err = os.ReadFile(fallbackImage)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read fallback image: %w", err)
-			}
-		}
-
 		// アイコンハッシュの計算とキャッシュ
-		iconHash := getIconHash(image)
-		iconHashCache.Set(userModel.Name, iconHash)
+		iconHash := iconHashCache.Get(userModel.Name)
+		if iconHash == "" {
+			iconHash = fallbackImageHash
+		}
 
 		// Userの生成
 		users[i] = User{

@@ -154,6 +154,8 @@ func initializeHandler(c echo.Context) error {
 	})
 }
 
+const iconDir = "./icons"
+
 func main() {
 	e := echo.New()
 	e.Debug = true
@@ -166,6 +168,11 @@ func main() {
 
 	// pprof
 	pprof.Register(e)
+
+	err := os.Mkdir(iconDir, 0755)
+	if err != nil {
+		e.Logger.Errorf("failed to create icons directory: %v", err)
+	}
 
 	// 初期化
 	e.POST("/api/initialize", initializeHandler)
